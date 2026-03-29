@@ -1,0 +1,9 @@
+numpy
+torch
+python-dotenv
+langchain-chroma
+langchain-community
+langchain-core
+langchain-huggingface
+sentence-transformers
+scikit-learn

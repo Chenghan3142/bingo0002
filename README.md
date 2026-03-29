@@ -1,0 +1,66 @@
+# TradingAgents-RAG-DL: Multi-Agent System for Quantitative Trading
+
+🎓 **面向金融量化研究的大语言模型多智能体协作框架**
+
+本项目基于大型语言模型 (LLM) 架构，实现了一个融合了 **RAG (检索增强生成)**、**Deep Learning (深度学习序列预测)** 与 **强化学习 (RL 经验反馈机制)** 的复杂多智能体量化投研系统。灵感来源于并扩展自开源投研智能体系统 [KylinMountain/TradingAgents-AShare](https://github.com/KylinMountain/TradingAgents-AShare)。
+
+本项目专为计算机科学、金融工程等交叉学科的学术研究与课程实践设计，提供了一个高度可扩展的底层框架，开箱即用。
+
+---
+
+## 🚀 快速开始 (Quick Start - 一键傻瓜式运行)
+
+为了方便复现和测试，我们提供了跨平台的一键启动脚本。**克隆本项目后，你只需要 2 个步骤即可运行：**
+
+### 💻 Windows 用户
+1. 双击运行目录下的 `start.bat`。*(脚本会自动创建虚拟环境并配置清华源下载依赖)*
+2. 脚本会在根目录自动生成一个 `.env` 文件。**请用记事本打开 `.env` 文件，填入你的大模型 API 密钥** (如 OpenAI / DeepSeek 等的 Key)。
+3. 再次双击 `start.bat`，即可启动主程序！
+
+### 🍎 MacOS / Linux 用户
+1. 打开终端，运行脚本：
+   ```bash
+   bash start.sh
+   ```
+2. 脚本会自动创建虚拟环境和 `.env` 配置文件。**使用编辑器打开 `.env` 并填入您的 API 密钥**。
+3. 再次运行 `bash start.sh`，即可启动主程序！
+
+> **🔔 注意事项**: 请勿将填好真实密钥的 `.env` 文件 `git push` 到公共仓库。系统已预设了严格的 `.gitignore` 保护您的隐私。
+
+---
+
+## 🔬 核心研究架构 (Architecture)
+
+本框架采用 **大模型感知-决策-执行** 的链路范式，由专门的数字员工团队进行市场博弈：
+
+1. **基本面分析师团队 (Fundamental Analysts)**：结合 **RAG** 技术，从海量历史研报、财报、新闻库中动态检索外挂知识，消除大语言模型的“幻觉”，从而进行精准的基本面与市场情绪分析。
+2. **量化研究员团队 (Quantitative Researchers)**：内置了基于 **PyTorch 构建的 Deep Learning 基座**，用于处理股价连续 K 线数据和高频时间序列特征（如在 `dl/predictor.py` 中实现了基于 LSTM 的涨跌预测网络），用于为 LLM 提供精确的数学支撑网络，解决 LLM 在纯文本推理时数学较弱的短板。
+3. **基金主理人 (Portfolio Manager / Trader)**：兼顾分析师研报和量化指标，应用基于博弈论的综合研判进行投资组合的买卖调度。
+4. **反思与强化学习模块 (Memory/RL Feedback)**：包含长短期记忆库与打分网络雏形。历史交易盈利会给予系统正反馈打分 (Reward)，亏损给予负反馈，引导 Agent 自动修复历史认知偏误。
+
+## 📂 目录结构说明
+
+```text
+TradingAgents_RAG_DL/
+├── agents/             # Agent 角色定义（基类、资深分析师、量化架构师、基金主理人）
+├── data/               # 运行时数据归档（记录反射JSON、SQLite记忆表及 ChromaDB 本地向量库）
+├── models/             # 深度学习预训练模型权重保存目录 (.pth)
+├── rag/                # 向量数据库检索模块（外挂知识基座与文档解析）
+├── dl/                 # 深度学习算法验证模块（基于 PyTorch 的 LSTM等系列预测器）
+├── memory/             # 基于长期、短期记忆的外带重构中心，支持经验反馈与打分网络
+├── dataflows/          # 金融数据管道（支持 AKShare、Tushare 等本地及 API 接入）
+├── scripts/            # 辅助调试脚本与视图工具 (如：知识库检索观测脚本)
+├── start.sh / start.bat# 各平台一键启动脚本
+├── main.py             # 核心投研系统执行主入口（执行单只或传参回测）
+├── batch_run.py        # 基于切片的全市场批量回测运行脚本
+└── requirements.txt    # 核心运行依赖清单
+```
+
+## 🛠 开发与学术二次拓展指南
+
+1. **更换大模型与接口**: 你可以在修改 `.env` 文件的同时，在对应配置处将 `base_url` 改为国内大模型（例如智谱、Moonshot、Deepseek）的中转接口进行低成本测试。
+2. **修改 RAG 数据库源**: 将你关注的证券研报放入本地目录，并在 `rag/retriever.py` 中引入对应的 PDF/TXT 文本解析器重新建立 ChromaDB 向量本地库。
+3. **结合强化学习 (RL)**: 在 `main.py` 的架构预留层，引入 `Stable-Baselines3` 或 `FinRL` 将当前策略验证与真实的 PPO/DQN 算法对接。
+
+---
+📝 *If you find this repository useful in your research, consider citing it or starring the repo!*

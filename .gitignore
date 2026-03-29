@@ -1,0 +1,43 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# API keys and secrets
+*.key
+credentials.json
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Vector Databases / Storage
+chroma_db/
+advanced_reflections_db/
+test_chroma/
+test_chroma2/
+data/vector_db/
+*.sqlite3
+*.db
+
+# Models
+*.pth
+*.pt
+*.onnx
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# MacOS
+.DS_Store
+
+# Local JSON Logs
+data/json/reflections.json
