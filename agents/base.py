@@ -30,7 +30,7 @@ class BaseAgent:
                     {"role": "system", "content": f"你是一个专业的金融量化系统中的 {self.role}。请简明扼要、客观理性地回答。"},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=60, # 因为是高频循环中的多智能体通信，控制在短摘要即可
+                max_tokens=600, # 原来60会导致JSON被截断解析失败，现调大以容纳完整JSON和思维链
                 temperature=0.3
             )
             return response.choices[0].message.content.strip()

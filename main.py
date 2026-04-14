@@ -1,5 +1,22 @@
 import os
 import sys
+import urllib.request
+
+# 强行拦截并绕过 macOS 系统的底层网络配置中的全局代理
+# 防止 requests 库在使用 AKShare 时隐式读取局域网/Wi-Fi配置的梯子代理导致连接重置
+urllib.request.getproxies = lambda: {}
+
+# 临时清除所有代理环境变量，防止拉取境内金融API(东方财富/AKShare)被VPN梯子拒断
+os.environ.pop("http_proxy", None)
+os.environ.pop("https_proxy", None)
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+os.environ.pop("ALL_PROXY", None)
+os.environ.pop("all_proxy", None)
+os.environ["NO_PROXY"] = "*"
+os.environ["no_proxy"] = "*"
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # 添加PYTHONPATH，方便模块查找
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +34,7 @@ import akshare as ak
 import pandas as pd
 import time
 import datetime
+import concurrent.futures
 
 def main():
     print("=== 启动 A股智能投研多智能体系统：全年历史回测模式 ==================")
@@ -138,7 +156,7 @@ def main():
     # 2. 博弈层与执行层
     bull_researcher = BullResearcher(name="看多金牌辩手")
     bear_researcher = BearResearcher(name="看空金牌辩手")
-    referee = GameReferee(name="无情裁判官")
+    referee = GameReferee(name="无情裁判官", memory_bank=memory_bank)
     risk_manager = RiskManager(name="风控大脑", memory_bank=memory_bank)
     trader_agent = TraderAgent(name="极速交易接口")
     reflector_agent = QuantitativeRiskReflector(name="量化策略迭代官", memory_bank=memory_bank)
@@ -161,20 +179,37 @@ def main():
         features = window_df[['开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌幅', '涨跌额', '换手率']].values
         
         # 阶段1: 并行调研产出
-        r_tech = tech_analyst.step(ticker, features=features, target_date=str(target_date))
-        r_sent = sentiment_analyst.step(ticker, target_date=str(target_date))
-        r_fund = fund_analyst.step(ticker, target_date=str(target_date))
-        r_macro = macro_analyst.step(ticker, target_date=str(target_date))
-        r_smart = smart_analyst.step(ticker, target_date=str(target_date))
-        r_news = news_analyst.step(ticker, target_date=str(target_date))
-        r_quant = quant_agent.step(ticker, features_override=features, target_date=str(target_date))
+        print("  [System] 启动底层多智能体兵团并发执行 (Async Threads)...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
+            future_tech = executor.submit(tech_analyst.step, ticker, features=features, target_date=str(target_date))
+            future_sent = executor.submit(sentiment_analyst.step, ticker, target_date=str(target_date))
+            future_fund = executor.submit(fund_analyst.step, ticker, target_date=str(target_date))
+            future_macro = executor.submit(macro_analyst.step, ticker, target_date=str(target_date))
+            future_smart = executor.submit(smart_analyst.step, ticker, target_date=str(target_date))
+            future_news = executor.submit(news_analyst.step, ticker, target_date=str(target_date))
+            future_quant = executor.submit(quant_agent.step, ticker, features_override=features, target_date=str(target_date))
+
+            r_tech = future_tech.result()
+            r_sent = future_sent.result()
+            r_fund = future_fund.result()
+            r_macro = future_macro.result()
+            r_smart = future_smart.result()
+            r_news = future_news.result()
+            r_quant = future_quant.result()
+        print("  [System] 并发调研阶段 1 完成，收集汇报完毕。")
         
         all_reports = [r_tech, r_sent, r_fund, r_macro, r_smart, r_news, r_quant]
         
         # 阶段2: 多空博弈与裁决
-        bull_case = bull_researcher.step(all_reports)
-        bear_case = bear_researcher.step(all_reports)
-        referee_decision = referee.step(bull_case, bear_case)
+        bull_initial = bull_researcher.step(all_reports)
+        bear_initial = bear_researcher.step(all_reports)
+        
+        # 交叉质询辩论轮次 (Cross-Examination)
+        bull_case = bull_researcher.cross_examine(my_case=bull_initial, opponent_case=bear_initial)
+        bear_case = bear_researcher.cross_examine(my_case=bear_initial, opponent_case=bull_initial)
+        
+        # 裁判最终定夺
+        referee_decision = referee.step(bull_case, bear_case, ticker=ticker)
         
         # 阶段3: 风控与执行
         final_instruction = risk_manager.step(ticker, referee_decision)

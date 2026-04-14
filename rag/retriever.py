@@ -13,6 +13,9 @@ class SimpleRAG:
 
     def _build_index(self):
         print("[RAG Subsystem] 正在初始化 HuggingFace Embeddings 与 ChromaDB...")
+        import os
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         
         documents = []

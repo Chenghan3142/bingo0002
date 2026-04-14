@@ -27,6 +27,10 @@ class MemoryBank:
         
         # 向量知识库初始化 (高维空间存储)
         print("[MemoryBank] 正在初始化 HuggingFace Embeddings 与 ChromaDB 以支持记忆 RAG...")
+        # 强制使得 langchain/huggingface 不去走被封的大陆直连或者受到无代理影响
+        import os
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        
         try:
             self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
             self.vector_store = Chroma(
@@ -40,8 +44,11 @@ class MemoryBank:
 
     def _load_principles(self):
         if os.path.exists(self.principle_file):
-            with open(self.principle_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(self.principle_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return []
         return []
 
     def _save_principles(self):
@@ -50,8 +57,11 @@ class MemoryBank:
 
     def load(self):
         if os.path.exists(self.file_path):
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(self.file_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                return []
         return []
 
     def append(self, record):

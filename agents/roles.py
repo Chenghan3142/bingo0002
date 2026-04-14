@@ -2,8 +2,37 @@ from .base import BaseAgent
 import numpy as np
 import time
 from dataflows.providers.akshare_provider import AkShareProvider
+import json
+import os
 
 provider = AkShareProvider()
+
+# 加载结构化角色定义
+ROLE_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "json", "roles.json")
+try:
+    with open(ROLE_CONFIG_PATH, "r", encoding="utf-8") as f:
+        ROLES_CONFIG = json.load(f)
+except FileNotFoundError:
+    ROLES_CONFIG = {}
+
+def parse_llm_json(llm_result: str):
+    """尝试将大模型返回解析为结构化的JSON字典数据"""
+    try:
+        # 清理可能包含的markdown json代码块标记
+        cleaned = llm_result.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        return json.loads(cleaned.strip())
+    except Exception as e:
+        # Fallback 策略
+        sentiment = "neutral"
+        if "positive" in llm_result.lower(): sentiment = "positive"
+        elif "negative" in llm_result.lower(): sentiment = "negative"
+        return {"sentiment": sentiment, "reasoning": llm_result, "thought_process": "解析失败，无法获取思维链", "confidence": 0.5}
 
 # ==========================================
 # 1. 数据与基础分析师团队 (Analysts)
@@ -11,7 +40,9 @@ provider = AkShareProvider()
 
 class TechnicalAnalyst(BaseAgent):
     def __init__(self, name: str):
-        super().__init__(name, "技术面分析师")
+        role_name = ROLES_CONFIG.get("TechnicalAnalyst", {}).get("role", "技术面分析师")
+        super().__init__(name, role_name)
+        self.config = ROLES_CONFIG.get("TechnicalAnalyst", {})
 
     def step(self, ticker: str, features: np.ndarray, target_date: str = None):
         self.log(f"分析 [{ticker}] 的K线形态、均线与动量指标...")
@@ -21,124 +52,214 @@ class TechnicalAnalyst(BaseAgent):
             data_str = f"过去几天的数据特征张量 (例如标准化后的开盘、收盘等): {np.round(last_few_days, 4).tolist()}"
 
         self.log(f"✅ 获取到技术面输入数据: {data_str[:150]}...")
-        prompt = f"你是一个专业的技术面量化分析师。针对股票 {ticker}，以下是它最新截面的量价技术面数据：\n{data_str}\n请判断技术面当前呈现出的涨跌倾向。请在回答最后明确包含 'positive', 'negative'，或 'neutral' 中的一个英文单词代表情绪。你的理由尽量简短(50字以内)。"
+        prompt_template = self.config.get(
+            "prompt_template", 
+            "你是一个专业的技术面量化分析师。针对股票 {ticker}，以下是它最新截面的量价技术面数据：\n{data}\n请判断技术面当前呈现出的涨跌倾向。请在回答最后明确包含 'positive', 'negative'，或 'neutral' 中的一个英文单词代表情绪。你的理由尽量简短(50字以内)。"
+        )
+        prompt = prompt_template.format(ticker=ticker, data=data_str)
         llm_result = self.query_llm(prompt)
         self.log(f"LLM根据技术面数据推理得出: {llm_result}")
         
-        sentiment = "neutral"
-        if "positive" in llm_result.lower(): sentiment = "positive"
-        elif "negative" in llm_result.lower(): sentiment = "negative"
+        parsed = parse_llm_json(llm_result)
+        sentiment = parsed.get("sentiment", "neutral")
+        reasoning = parsed.get("reasoning", llm_result)
+        thought_process = parsed.get("thought_process", "无")
+        confidence = parsed.get("confidence", 0.5)
         
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": llm_result}
+        return {"agent": self.name, "sentiment": sentiment, "confidence": confidence, "reasoning": reasoning, "thought_process": thought_process}
 
 class SentimentAnalyst(BaseAgent):
     def __init__(self, name: str):
-        super().__init__(name, "舆情分析师")
+        role_name = ROLES_CONFIG.get("SentimentAnalyst", {}).get("role", "舆情分析师")
+        super().__init__(name, role_name)
+        self.config = ROLES_CONFIG.get("SentimentAnalyst", {})
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"挖掘 [{ticker}] 社交媒体(股吧、雪球等)新闻散户情绪...")
         news_str = provider.fetch_sentiment_data(ticker)
         self.log(f"✅ 成功抓取舆情: {news_str}")
 
-        prompt = f"你是一名专门对接对冲基金的散户舆情与新闻情感分析师。对于股票代码 {ticker}，相关市场舆情如下：\n{news_str}\n请你研判整体散户与新闻面传递出的情绪是多头还是空头。请在回答段落最后明确输出 'positive', 'negative'，或 'neutral'。附带简短推理逻辑(50字以内)。"
+        prompt_template = self.config.get(
+            "prompt_template",
+            "你是一名专门对接对冲基金的散户舆情与新闻情感分析师。对于股票代码 {ticker}，相关市场舆情如下：\n{data}\n请你研判整体散户与新闻面传递出的情绪是多头还是空头。请在回答段落最后明确输出 'positive', 'negative'，或 'neutral'。附带简短推理逻辑(50字以内)。"
+        )
+        prompt = prompt_template.format(ticker=ticker, data=news_str)
         llm_result = self.query_llm(prompt)
         self.log(f"LLM根据舆情数据推理得出: {llm_result}")
         
-        sentiment = "neutral"
-        if "positive" in llm_result.lower(): sentiment = "positive"
-        elif "negative" in llm_result.lower(): sentiment = "negative"
+        parsed = parse_llm_json(llm_result)
+        sentiment = parsed.get("sentiment", "neutral")
+        reasoning = parsed.get("reasoning", llm_result)
+        thought_process = parsed.get("thought_process", "无")
+        confidence = parsed.get("confidence", 0.5)
         
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": llm_result}
+        return {"agent": self.name, "sentiment": sentiment, "confidence": confidence, "reasoning": reasoning, "thought_process": thought_process}
 
 class FundamentalAnalyst(BaseAgent):
     def __init__(self, name: str):
-        super().__init__(name, "基本面分析师")
+        role_name = ROLES_CONFIG.get("FundamentalAnalyst", {}).get("role", "基本面分析师")
+        super().__init__(name, role_name)
+        self.config = ROLES_CONFIG.get("FundamentalAnalyst", {})
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"分析 [{ticker}] 财报数据(PE, PB)及行业研报估值...")
         data_str = provider.fetch_fundamental_data(ticker)
         self.log(f"✅ 成功抓取基本面核心估值数据: {data_str}")
 
-        prompt = f"你是一名资深的价值投资基本面分析师。针对股票 {ticker}，以下是最新的真实基本面估值数据：\n{data_str}\n结合该行业的普遍情况与估值分布（如PE/PB是否具备安全边际），研判当前基本面健康度。请在结尾明确包含 'positive', 'negative' 或 'neutral'。 给出极简分析逻辑(50字内)。"
+        prompt_template = self.config.get(
+            "prompt_template",
+            "你是一名资深的价值投资基本面分析师。针对股票 {ticker}，以下是最新的真实基本面估值数据：\n{data}\n结合该行业的普遍情况与估值分布（如PE/PB是否具备安全边际），研判当前基本面健康度。请在结尾明确包含 'positive', 'negative' 或 'neutral'。 给出极简分析逻辑(50字内)。"
+        )
+        prompt = prompt_template.format(ticker=ticker, data=data_str)
         llm_result = self.query_llm(prompt)
         self.log(f"LLM根据基本面数据推理得出: {llm_result}")
         
-        sentiment = "neutral"
-        if "positive" in llm_result.lower(): sentiment = "positive"
-        elif "negative" in llm_result.lower(): sentiment = "negative"
+        parsed = parse_llm_json(llm_result)
+        sentiment = parsed.get("sentiment", "neutral")
+        reasoning = parsed.get("reasoning", llm_result)
+        thought_process = parsed.get("thought_process", "无")
+        confidence = parsed.get("confidence", 0.5)
             
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": llm_result}
+        return {"agent": self.name, "sentiment": sentiment, "confidence": confidence, "reasoning": reasoning, "thought_process": thought_process}
 
 class MacroAnalyst(BaseAgent):
     def __init__(self, name: str):
-        super().__init__(name, "宏观经济分析师")
+        role_name = ROLES_CONFIG.get("MacroAnalyst", {}).get("role", "宏观经济分析师")
+        super().__init__(name, role_name)
+        self.config = ROLES_CONFIG.get("MacroAnalyst", {})
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"评估宏观周期、利率环境及大盘(上证指数)系统性风险...")
         macro_str = provider.fetch_macro_data()
         self.log(f"✅ 成功抓取近期上证大盘走势: {macro_str[:50]}...")
 
-        prompt = f"你是一名宏观经济及大盘系统性风险分析师。结合以下A股上证大盘近期的真实指标：\n{macro_str}\n请判断当前市场整体系统性环境、流动性情绪对做多个股是否具备支撑。回答结尾必须明确输出 'positive', 'negative' 或 'neutral'，理由需非常精简(不超过50字) 。"
+        prompt_template = self.config.get(
+            "prompt_template",
+            "你是一名宏观经济及大盘系统性风险分析师。结合以下A股上证大盘近期的真实指标：\n{data}\n请判断当前市场整体系统性环境、流动性情绪对做多个股是否具备支撑。回答结尾必须明确输出 'positive', 'negative' 或 'neutral'，理由需非常精简(不超过50字) 。"
+        )
+        prompt = prompt_template.format(ticker=ticker, data=macro_str)
         llm_result = self.query_llm(prompt)
         self.log(f"LLM根据宏观大盘数据推理得出: {llm_result}")
         
-        sentiment = "neutral"
-        if "positive" in llm_result.lower(): sentiment = "positive"
-        elif "negative" in llm_result.lower(): sentiment = "negative"
+        parsed = parse_llm_json(llm_result)
+        sentiment = parsed.get("sentiment", "neutral")
+        reasoning = parsed.get("reasoning", llm_result)
+        thought_process = parsed.get("thought_process", "无")
+        confidence = parsed.get("confidence", 0.5)
             
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": llm_result}
+        return {"agent": self.name, "sentiment": sentiment, "confidence": confidence, "reasoning": reasoning, "thought_process": thought_process}
 
 class SmartMoneyAnalyst(BaseAgent):
     def __init__(self, name: str):
-        super().__init__(name, "主力资金分析师")
+        role_name = ROLES_CONFIG.get("SmartMoneyAnalyst", {}).get("role", "主力资金分析师")
+        super().__init__(name, role_name)
+        self.config = ROLES_CONFIG.get("SmartMoneyAnalyst", {})
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"监控 [{ticker}] 北向资金、机构龙虎榜与大单净流入...")
         flow_str = provider.fetch_smart_money_data(ticker)
         self.log(f"✅ 成功提取主力大单资金净流入: {flow_str[:50]}...")
 
-        prompt = f"你是量化团队中的主力游资（Smart Money）追踪监测分析师。对于股票 {ticker}，以下是你捕获到的最新主力净流入异动数据：\n{flow_str}\n请判断游资或机构主力目前是在洗盘吸筹、出货派发还是观望。最后一行必须包含 'positive', 'negative' 或 'neutral'。 理由请控制在50字左右。"
+        prompt_template = self.config.get(
+            "prompt_template",
+            "你是量化团队中的主力游资（Smart Money）追踪监测分析师。对于股票 {ticker}，以下是你捕获到的最新主力净流入异动数据：\n{data}\n请判断游资或机构主力目前是在洗盘吸筹、出货派发还是观望。最后一行必须包含 'positive', 'negative' 或 'neutral'。 理由请控制在50字左右。"
+        )
+        prompt = prompt_template.format(ticker=ticker, data=flow_str)
         llm_result = self.query_llm(prompt)
-        self.log(f"LLM根据游资流入数据推理得出: {llm_result}")
+        self.log(f"LLM根据主力资金数据推理得出: {llm_result}")
         
-        sentiment = "neutral"
-        if "positive" in llm_result.lower(): sentiment = "positive"
-        elif "negative" in llm_result.lower(): sentiment = "negative"
+        parsed = parse_llm_json(llm_result)
+        sentiment = parsed.get("sentiment", "neutral")
+        reasoning = parsed.get("reasoning", llm_result)
+        thought_process = parsed.get("thought_process", "无")
+        confidence = parsed.get("confidence", 0.5)
             
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": llm_result}
+        return {"agent": self.name, "sentiment": sentiment, "confidence": confidence, "reasoning": reasoning, "thought_process": thought_process}
 
 class NewsAnalystAgent(BaseAgent):
     def __init__(self, name: str, rag_engine):
-        super().__init__(name, "新闻研报分析师")
+        super().__init__(name, "新闻研报特工 (Agentic RAG)")
         self.rag = rag_engine
 
     def step(self, ticker: str, target_date: str = None):
         date_str = f"({target_date})" if target_date else ""
-        self.log(f"根据 RAG 知识库检索新闻并推演情感...")
-        docs = self.rag.retrieve(ticker, target_date=target_date, top_k=2)
+        self.log(f"🔎 启动 Agentic RAG 检索迭代特工，目标标的: [{ticker}] {date_str}...")
         
-        if not docs:
-            docs = ["暂无有效新闻资讯"]
-            
-        summary = "综合文献得到：" + ", ".join(docs)
-        self.scratchpad.append(f"RAG 检索完成 - {summary}")
+        max_iters = 5
+        query = ticker
+        all_docs = []
         
-        # 为了加速本地回测，使用本地规则短路，如果是实盘可放开 query_llm
-        if "利好" in summary or "大增" in summary:
-            llm_conclusion = "基本面显著向好，具备上涨潜力(positive)"
-            sentiment = "positive"
-        else:
-            # 依然保留一段查询以展示真实的 API 接入，若无 KEY 会退化为模拟
-            analysis_prompt = f"针对新闻：【{summary}】，给出极简涨跌判定(positive/negative)。"
-            llm_conclusion = self.query_llm(analysis_prompt)
-            sentiment = "positive" if "positive" in llm_conclusion.lower() or "涨" in llm_conclusion else "negative"
+        # Agentic RAG 反思检索循环
+        for i in range(max_iters):
+            self.log(f"  -> 第 {i+1} 轮检索, 搜索词: '{query}'")
+            docs = self.rag.retrieve(query, target_date=target_date, top_k=2)
+            if docs:
+                all_docs.extend(docs)
+                
+            # 去重
+            all_docs = list(set(all_docs))
+            if not all_docs:
+                self.log("  -> 未检索到任何有效外部文本。结束检索。")
+                break
+                
+            summary = "\n".join(all_docs)
+            eval_prompt = f"""你是一个智能搜索研报与新闻的特工。
+我们正在分析股票 【{ticker}】。目前我们收集到的情报如下：
+{summary}
+
+请你判断这些信息是否足够支撑判断该股票的涨跌趋势？(我们需要与它相关的公司新闻、宏观政策或产业链动态)。
+请务必返回以下合法的JSON格式，不要有任何多余字符或Markdown包裹：
+{{"enough": true或false, "next_query": "如果你觉得不够(enough=false)，请给出一个更有针对性的搜索关键词(如产业链、同类竞品、上游等)，如果足够则留空", "reason": "你的判断理由(50字内)"}}
+            """
             
-        self.log(f"大模型研判结论: {llm_conclusion}")
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": llm_conclusion}
+            try:
+                eval_result = self.query_llm(eval_prompt)
+                parsed_eval = parse_llm_json(eval_result)
+                is_enough = parsed_eval.get("enough", True)
+                reason = parsed_eval.get("reason", "无法解析评估理由。")
+                
+                self.log(f"  -> RAG 评估结果: 足够={is_enough}, 理由: {reason}")
+                
+                if is_enough:
+                    break
+                else:
+                    query = parsed_eval.get("next_query", ticker + " 产业链 财务")
+                    if not query or query == ticker:
+                        break
+            except Exception as e:
+                self.log(f"  -> Agentic 评估环节出错，中断检索循环: {e}")
+                break
+
+        if not all_docs:
+            all_docs = ["暂无有关此标的的新闻研报或宏观有效资讯记录。"]
+            
+        final_summary = "总体文献摘要：\n" + "\n".join(all_docs)
+        self.scratchpad.append(f"Agentic RAG 工作流结束。收集到文献数为: {len(all_docs)}")
+        
+        # 最终汇总判定
+        final_prompt = f"""你是一名资深量化系统的【新闻研报分析师】。
+针对标的 【{ticker}】，经过多轮 Agentic 检索获取到的全部相关深度切片如下：
+{final_summary}
+
+请你判断新闻与基本面传递出的综合情绪，并给出一个明确的看多、看空、或者中性评级。
+务必只输出合法的纯 JSON 格式，且只包含这四个字段，不含外部前缀或markdown代码块。
+{{"thought_process": "基于这些深度文献的归纳梳理和逻辑判断链条", "sentiment": "必须是 positive, negative 或 neutral 之一", "confidence": 0.0到1.0的浮点数, "reasoning": "一句话精炼你的结论(50字内)"}}
+"""
+        
+        llm_conclusion = self.query_llm(final_prompt)
+        parsed_final = parse_llm_json(llm_conclusion)
+        
+        sentiment = parsed_final.get("sentiment", "neutral")
+        reasoning = parsed_final.get("reasoning", llm_conclusion)
+        thought_process = parsed_final.get("thought_process", "提取失败。")
+        confidence = parsed_final.get("confidence", 0.5)
+        
+        self.log(f"✅ RAG 特工最终裁决: {sentiment} (置信度:{confidence})")
+        return {"agent": self.name, "sentiment": sentiment, "confidence": float(confidence), "reasoning": reasoning, "thought_process": thought_process}
 
 class QuantResearcherAgent(BaseAgent):
     def __init__(self, name: str, dl_engine):
-        super().__init__(name, "深度学习量化研究员")
+        super().__init__(name, "深度学习量化研究员(Hybrid AI)")
         self.dl = dl_engine
 
     def step(self, ticker: str, features_override: np.ndarray = None, target_date: str = None):
@@ -148,10 +269,42 @@ class QuantResearcherAgent(BaseAgent):
         else:
             features = features_override
 
+        # 1. 深度学习得出纯数值
         pred = self.dl.predict(ticker, features)
-        sentiment = "positive" if pred["score"] > 0 else "negative"
-        self.log(f"LSTM 预测: {pred['trend']} 置信度[{pred['confidence']}]")
-        return {"agent": self.name, "sentiment": sentiment, "reasoning": f"DL逻辑倾向 {pred['trend']} (打分:{pred['score']:.2f})"}
+        
+        dl_score = pred["score"]
+        dl_confidence_str = pred.get("confidence", "50.0%").replace("%", "")
+        
+        try:
+            dl_confidence = min(float(dl_confidence_str) / 100.0, 1.0)
+        except:
+            dl_confidence = 0.5
+            
+        trend = "看多" if dl_score > 0 else "看空"
+        
+        self.log(f"LSTM 预测 (无情绪纯数学打分): {pred['trend']} 原始分[{dl_score:.4f}] 预测置信度[{dl_confidence:.2f}]")
+        
+        # 2. 让 LLM 解释深度学习模型输出 (多模态 / Hybrid AI)
+        prompt = f"""你是一名跨模态量化分析师，专门负责将深度学习 (DL) 模型的冰冷回测数值转化为可读的交易逻辑。
+现在是针对股票 {ticker} 的深度学习分析：
+- 底层模型: LSTM 时间序列神经网络
+- 特征工程: 过去 10 个时间步的量价时序张量特征
+- 深度学习算力直接给出的预测值: {dl_score:.4f} (正数倾向于涨，负数倾向于跌)
+- 数学层面的置信度评估: {dl_confidence:.2%}
+
+由于你具备结合大模型常识体系的能力，请你评估这份机器的数学预测。如果数学模型给出了强烈的预测（置信度高或分数绝对值大），请坚决肯定它；如果数学模型的确定性不足，请指出它的局限性。
+最后请务必仅输出JSON结构，不包含任何外部或markdown前缀。格式为: 
+{{"thought_process": "你的跨模态融合解读思路", "sentiment": "必须是 positive, negative 或 neutral", "confidence": 与机器模型结果匹配的大模型确信度(0.0到1.0), "reasoning": "简练的一句话量化预测总结(50字内)"}}
+"""
+        llm_result = self.query_llm(prompt)
+        parsed = parse_llm_json(llm_result)
+        
+        sentiment = parsed.get("sentiment", "positive" if dl_score > 0 else "negative")
+        reasoning = parsed.get("reasoning", f"DL逻辑倾向 {trend} (打分:{dl_score:.2f})")
+        confidence = parsed.get("confidence", dl_confidence)
+        thought_process = parsed.get("thought_process", f"深度学习引擎计算的出趋势预测为{trend}。")
+        
+        return {"agent": self.name, "sentiment": sentiment, "confidence": float(confidence), "reasoning": reasoning, "thought_process": thought_process}
 
 
 # ==========================================
@@ -164,16 +317,35 @@ class BullResearcher(BaseAgent):
 
     def step(self, reports: list):
         bull_points = [r for r in reports if r['sentiment'] == 'positive']
-        self.log(f"提炼看多阵营子弹: 共收集 {len(bull_points)} 条看多逻辑。")
+        strength = sum(r.get('confidence', 1.0) for r in bull_points)
+        self.log(f"提炼看多阵营子弹: 共收集 {len(bull_points)} 条看多逻辑，总置信度得分: {strength:.2f}。")
         
         if not bull_points:
-            return {"agent": self.name, "strength": 0, "thesis": "暂无有效的看多逻辑支撑。"}
+            return {"agent": self.name, "strength": 0.0, "thesis": "暂无有效的看多逻辑支撑。"}
             
-        info_str = "\n".join([f"- {r['agent']}: {r['reasoning']}" for r in bull_points])
-        prompt = f"你目前代表【多方阵营】。这里是各分析师给出的看多信号：\n{info_str}\n请将它们凝聚成一篇精炼有力、具有说服力的多头辩论陈词(字数在100字以内)。"
+        info_str = "\n".join([f"- {r['agent']} (置信度:{r.get('confidence', 1.0)}): {r['reasoning']}" for r in bull_points])
+        prompt = f"你目前代表【多方阵营】。这里是各分析师给出的看多信号：\n{info_str}\n请将它们凝聚成一篇精炼有力、具有说服力的多头辩论陈词(字数在100字以内)。请务必结合发出信号分析师的置信度进行表达（高置信度应更强硬）。"
         thesis = self.query_llm(prompt)
         self.log(f"看多辩词: {thesis}")
-        return {"agent": self.name, "strength": len(bull_points), "thesis": thesis}
+        return {"agent": self.name, "strength": round(strength, 2), "thesis": thesis}
+
+    def cross_examine(self, my_case: dict, opponent_case: dict) -> dict:
+        self.log(f"⚔️ 收到空方阵营的炮火，准备发起反击...")
+        if opponent_case["strength"] == 0.0:
+            return my_case # 空方无话可说，无需反驳
+            
+        prompt = f"""你代表【多方阵营】参与量化多空辩论。
+你的初始阵地与逻辑是：
+{my_case['thesis']}
+
+现在，【空方阵营】对市场提出了以下看空逻辑和威胁警告：
+{opponent_case['thesis']}
+
+作为看多辩手，请你对空方的核心威胁进行一次犀利、客观的反驳(Cross-Examination)。请指出他们的风险其实被夸大了，或者其实已经被多方的某项利好对冲掉。当然，如果空方理由确实致命，你也应该在陈词中展现出一定的谨慎或防守策略。
+请将【你的原逻辑】与【对空方的反驳】融合为一篇全新的、更加无懈可击的多头最终陈词 (字数严格要求在150字以内)。"""
+        new_thesis = self.query_llm(prompt)
+        self.log(f"看多反击陈词: {new_thesis[:50]}...")
+        return {"agent": self.name, "strength": my_case["strength"], "thesis": new_thesis}
 
 class BearResearcher(BaseAgent):
     def __init__(self, name: str):
@@ -181,22 +353,42 @@ class BearResearcher(BaseAgent):
 
     def step(self, reports: list):
         bear_points = [r for r in reports if r['sentiment'] == 'negative']
-        self.log(f"提炼看空阵营子弹: 共收集 {len(bear_points)} 条看空逻辑。")
+        strength = sum(r.get('confidence', 1.0) for r in bear_points)
+        self.log(f"提炼看空阵营子弹: 共收集 {len(bear_points)} 条看空逻辑，总置信度得分: {strength:.2f}。")
         
         if not bear_points:
-            return {"agent": self.name, "strength": 0, "thesis": "暂无有效的看空逻辑支撑。"}
+            return {"agent": self.name, "strength": 0.0, "thesis": "暂无有效的看空逻辑支撑。"}
             
-        info_str = "\n".join([f"- {r['agent']}: {r['reasoning']}" for r in bear_points])
-        prompt = f"你目前代表【空方阵营】。这里是各分析师给出的看空或利空风险信号：\n{info_str}\n请将它们凝聚成一篇精炼有力、具有警示性的空头辩论陈词(字数在100字以内)。"
+        info_str = "\n".join([f"- {r['agent']} (置信度:{r.get('confidence', 1.0)}): {r['reasoning']}" for r in bear_points])
+        prompt = f"你目前代表【空方阵营】。这里是各分析师给出的看空或利空风险信号：\n{info_str}\n请将它们凝聚成一篇精炼有力、具有警示性的空头辩论陈词(字数在100字以内)。请务必结合发出信号分析师的置信度进行表达（高置信度应更强硬）。"
         thesis = self.query_llm(prompt)
         self.log(f"看空辩词: {thesis}")
-        return {"agent": self.name, "strength": len(bear_points), "thesis": thesis}
+        return {"agent": self.name, "strength": round(strength, 2), "thesis": thesis}
+
+    def cross_examine(self, my_case: dict, opponent_case: dict) -> dict:
+        self.log(f"⚔️ 收到多方阵营的炮火，准备发起反击...")
+        if opponent_case["strength"] == 0.0:
+            return my_case # 多方无话可说，无需反驳
+            
+        prompt = f"""你代表【空方阵营】参与量化多空辩论。
+你的初始阵地与逻辑是：
+{my_case['thesis']}
+
+现在，【多方阵营】对市场提出了以下看多逻辑和乐观预期：
+{opponent_case['thesis']}
+
+作为看空辩手，请你对多方的盲目乐观进行一次冷酷、犀利的反驳(Cross-Examination)。请戳破他们的幻想，指出其中隐藏的陷阱、未能计入的风险或虚假的利好支撑。当然，如果多方理由十分坚固，你也应该在陈词中适当收敛极端的做空态度。
+请将【你的原逻辑】与【对多方的反驳】融合为一篇全新的、更加具有警示性的空头最终陈词 (字数严格要求在150字以内)。"""
+        new_thesis = self.query_llm(prompt)
+        self.log(f"看空反击陈词: {new_thesis[:50]}...")
+        return {"agent": self.name, "strength": my_case["strength"], "thesis": new_thesis}
 
 class GameReferee(BaseAgent):
-    def __init__(self, name: str):
+    def __init__(self, name: str, memory_bank=None):
         super().__init__(name, "多空博弈裁判")
+        self.memory_bank = memory_bank
 
-    def step(self, bull_case, bear_case):
+    def step(self, bull_case, bear_case, ticker: str = "UNKNOWN"):
         self.log("⚖️ 正在进行高维裁判...")
         
         bull_thesis = bull_case["thesis"]
@@ -204,18 +396,38 @@ class GameReferee(BaseAgent):
         bull_score = bull_case["strength"]
         bear_score = bear_case["strength"]
         
-        prompt = f"""你是一名极为理性的量化交易主理人(裁判)。请仔细聆听以下多空双方的辩论陈词，以及对应的子阵营分析师票数厚度：
+        # 1. 触发 Memory RAG 检索！
+        memory_prompt = ""
+        current_scene_desc = f"我们在标的 {ticker} 上面临多方总票数 {bull_score:.2f} 对抗 空方总票数 {bear_score:.2f} 的战局。"
+        if self.memory_bank:
+            self.log("  -> 正在 RAG 检索历史上类似的多空战局踩坑经验...")
+            past_exps = self.memory_bank.retrieve_relevant_experience(
+                current_scene_desc=current_scene_desc, 
+                role="System", 
+                current_regime="General", 
+                top_k=2
+            )
+            if past_exps:
+                exp_strs = []
+                for idx, exp in enumerate(past_exps):
+                    exp_strs.append(f"   [历史战役 {idx+1}，经验置信度 {exp['score']:.2f}]: {exp['content']}")
+                memory_prompt = "\n【来自系统 RAG 数据库的血泪教训警告】：\n" + "\n".join(exp_strs) + "\n请你在裁决时务必吸取上述历史错误或成功经验！如果历史表明极度危险，请果断修改你的决策或转为 HOLD。"
+                self.log(f"  -> 检索到 {len(past_exps)} 条历史重要战役经验教训！")
+        
+        prompt = f"""你是一名极为理性的量化交易主理人(裁判)。请仔细聆听以下多空双方的辩论陈词，以及对应阵营的基于置信度累加的总票数厚度：
 
-【多方阵营陈词】 (票数: {bull_score})
+【多方阵营陈词】 (置信度总票数: {bull_score:.2f})
 {bull_thesis}
 
-【空方阵营陈词】 (票数: {bear_score})
+【空方阵营陈词】 (置信度总票数: {bear_score:.2f})
 {bear_thesis}
+{memory_prompt}
 
-现请你综合裁断，最终只能给出：'BUY'、'SELL' 或 'HOLD' 作为操作结论。
+现请你综合裁断(必须非常重视两边的置信度总票数权重)，最终只能给出：'BUY'、'SELL' 或 'HOLD' 作为操作结论。
+如果两边票数或逻辑很弱且接近，请倾向于给出 'HOLD' 规避风险。
 你的回答格式必须是：
 结论：<BUY/SELL/HOLD>
-理由：<不多于100字的裁判裁决原因>
+理由：<不多于100字的裁判裁决原因，如果结合了历史教训请指出来>
 """
         llm_result = self.query_llm(prompt)
         
@@ -226,7 +438,9 @@ class GameReferee(BaseAgent):
             decision = "SELL"
             
         self.log(f"裁判决断 -> 【{decision}】 深度理由:\n{llm_result}")
-        return {"decision": decision, "reason": llm_result}
+        
+        # 将原始多空强度带入下一步计算仓位
+        return {"decision": decision, "reason": llm_result, "bull_score": bull_score, "bear_score": bear_score}
 
 
 # ==========================================
@@ -241,8 +455,12 @@ class RiskManager(BaseAgent):
     def step(self, ticker: str, referee_decision: dict):
         final_decision = referee_decision["decision"]
         reason = referee_decision["reason"]
+        bull_score = referee_decision.get("bull_score", 0.0)
+        bear_score = referee_decision.get("bear_score", 0.0)
         
-        self.log("🛡️ 进行交易前的最后风控审查...")
+        self.log("🛡️ 进行交易前的最后风控审查与动态仓位计算 (Kelly Criterion)...")
+        kelly_fraction = 0.0
+        
         if self.memory_bank:
             # 【进阶方向1&5】：从高维向量数据库中调取高度相似的历史风险场景（取代生硬的时间倒推）
             try:
@@ -271,7 +489,55 @@ class RiskManager(BaseAgent):
                     self.log("⚠️ 触发近期基础记忆风控熔断，否决买入提议！")
                 else:
                     self.log("✅ 基础风控审核通过，近期无重大回撤隐患。")
-        return {"decision": final_decision, "reason": reason}
+                    
+            # 动态计算凯利仓位
+            if final_decision in ["BUY", "SELL"]:
+                all_records = [m for m in self.memory_bank.memory if m.get('ticker') == ticker and m.get('decision') == final_decision]
+                historical_pnls = [m.get('pnl_percent', 0.0) for m in all_records]
+                
+                N = len(historical_pnls)
+                base_position = 0.0
+                
+                # 基于当期多空强度的初始建仓意愿
+                total_score = bull_score + bear_score
+                if total_score > 0:
+                    if final_decision == "BUY":
+                        base_position = min(bull_score / max(total_score, 1.0), 1.0)
+                    elif final_decision == "SELL":
+                        base_position = min(bear_score / max(total_score, 1.0), 1.0)
+                
+                # 如果有历史交易记录，则结合胜率和赔率计算 Kelly
+                if N > 0:
+                    win_pnls = [p for p in historical_pnls if p > 0]
+                    loss_pnls = [p for p in historical_pnls if p < 0]
+                    p_win = len(win_pnls) / N
+                    avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0.001
+                    avg_loss = abs(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0.001
+                    pnl_ratio = avg_win / avg_loss
+                    
+                    k_fraction = p_win - ((1 - p_win) / pnl_ratio)
+                    # 只有大于0才认为有下注价值
+                    kelly_weight = max(0.0, min(1.0, k_fraction))
+                    
+                    # 综合多空强度和凯利公式
+                    final_position = (base_position * 0.4) + (kelly_weight * 0.6)
+                    self.log(f"📊 基于历史 {N} 笔交易(胜率 {p_win*100:.1f}%)的 Kelly计算上限: {kelly_weight*100:.1f}%")
+                else:
+                    # 没有历史记录，保守建仓
+                    final_position = base_position * 0.3
+                    self.log(f"📊 无历史交易记录，保守计算置信仓位。")
+
+                final_position = max(0.05, min(1.0, final_position)) # 最低5%试错，最高满仓
+                kelly_fraction = round(final_position * 100, 2)
+                reason += f" | 建议配置仓位: {kelly_fraction}%"
+                self.log(f"💰 风控中心综合计算得出建议执行仓位: {kelly_fraction}%")
+
+        # 封装成为最终交易对象的指令
+        return {
+            "decision": final_decision, 
+            "reason": reason, 
+            "position_percent": kelly_fraction
+        }
 
 class TraderAgent(BaseAgent):
     def __init__(self, name: str):
@@ -279,8 +545,14 @@ class TraderAgent(BaseAgent):
 
     def step(self, final_instruction: dict) -> str:
         decision = final_instruction["decision"]
-        self.log(f"💰 接收到上游最终指令: {decision}。 向券商柜台/撮合引擎发送订单。")
-        return decision
+        position = final_instruction.get("position_percent", 0.0)
+        
+        target_action = decision
+        if decision in ["BUY", "SELL"] and position > 0:
+            target_action = f"{decision} {position}%"
+            
+        self.log(f"💰 接收到上游最终指令: {target_action}。 向券商柜台/撮合引擎发送订单。")
+        return target_action
 
 class QuantitativeRiskReflector(BaseAgent):
     def __init__(self, name: str, memory_bank):
@@ -288,14 +560,33 @@ class QuantitativeRiskReflector(BaseAgent):
         self.memory_bank = memory_bank
         
     def step(self, ticker: str, decision: str, reports: list, pnl_percent: float):
-        self.log(f"T+1日模拟结算复盘，标的[{ticker}]真实单次盈亏 [{pnl_percent}%]")
+        # 提取真实意图与仓位（可能是 BUY 30.5%）
+        action = "HOLD"
+        position = 0.0
+        if decision.startswith("BUY"):
+            action = "BUY"
+            try:
+                # e.g., "BUY 27.5%" => extract 27.5
+                position = float(decision.replace("BUY", "").replace("%", "").strip()) / 100.0
+            except:
+                position = 1.0
+        elif decision.startswith("SELL"):
+            action = "SELL"
+            try:
+                position = float(decision.replace("SELL", "").replace("%", "").strip()) / 100.0
+            except:
+                position = 1.0
+
+        # 由于启用了动态仓位，真实的盈亏应当是：标的波动率 * 仓位暴露
+        actual_pnl = pnl_percent * position if action == "BUY" else ((-pnl_percent) * position if action == "SELL" else 0.0)
+
+        self.log(f"T+1日模拟结算复盘，标的[{ticker}] 原波动 [{pnl_percent}%], 实际账户盈亏贡献 [{actual_pnl:.3f}%]")
         
         all_records = [m for m in self.memory_bank.memory if m.get('ticker') == ticker and m.get('decision') in ["BUY", "SELL"]]
-        current_trade_pnl = pnl_percent if decision in ["BUY", "SELL"] else 0.0
         
         historical_pnls = [m.get('pnl_percent', 0.0) for m in all_records]
-        if decision in ["BUY", "SELL"]:
-            historical_pnls.append(current_trade_pnl)
+        if action in ["BUY", "SELL"]:
+            historical_pnls.append(actual_pnl)
             
         N = len(historical_pnls)
         if N > 0:
@@ -306,6 +597,7 @@ class QuantitativeRiskReflector(BaseAgent):
             avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0.0
             avg_loss = abs(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 0.0
             pnl_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
+            
             if pnl_ratio != float('inf') and pnl_ratio > 0:
                 kelly_fraction = p_win - ((1 - p_win) / pnl_ratio)
             else:
@@ -314,25 +606,25 @@ class QuantitativeRiskReflector(BaseAgent):
             kelly_fraction = max(0.0, min(1.0, kelly_fraction)) * 100
             expected_return = p_win * avg_win - (1 - p_win) * avg_loss
             
-            stats_msg = f"样本={N}笔, 胜率={p_win*100:.1f}%, 盈亏比={pnl_ratio if pnl_ratio != float('inf') else 999.99:.2f}, 期望单次收益={expected_return:.2f}%. Kelly建议仓位: {kelly_fraction:.1f}%"
+            stats_msg = f"样本={N}笔, 胜率={p_win*100:.1f}%, 真实盈亏比={pnl_ratio if pnl_ratio != float('inf') else 999.99:.2f}, 期望单次收益={expected_return:.2f}%. Kelly建议上限: {kelly_fraction:.1f}%"
         else:
             stats_msg = "暂无足够实盘买卖样本计算凯利仓位与胜率。"
 
         reflection_text = ""
-        if decision in ["BUY", "SELL"]:
-            if current_trade_pnl < -3.0:
-                reflection_text = f"严重回撤 ({current_trade_pnl}%)！当前统计: {stats_msg}。系统应考虑降低贝塔参与度。"
-            elif current_trade_pnl > 0:
-                reflection_text = f"策略获利 ({current_trade_pnl}%)。当前统计: {stats_msg}。"
+        if action in ["BUY", "SELL"]:
+            if actual_pnl < -1.5:
+                reflection_text = f"严重回撤 ({actual_pnl:.2f}%)！当前统计: {stats_msg}。系统应考虑降低贝塔参与度。"
+            elif actual_pnl > 0:
+                reflection_text = f"策略获利 ({actual_pnl:.2f}%)。当前统计: {stats_msg}。"
             else:
-                reflection_text = f"微小摩擦 ({current_trade_pnl}%)。当前统计: {stats_msg}"
+                reflection_text = f"微小摩擦 ({actual_pnl:.2f}%)。当前统计: {stats_msg}"
         else:
             reflection_text = "本次为空仓观望(HOLD)，未产生资金损患。"
             
         record = {
             "ticker": ticker,
-            "decision": decision,
-            "pnl_percent": round(pnl_percent, 2),
+            "decision": action,
+            "pnl_percent": round(actual_pnl, 2),
             "reflection_text": reflection_text,
             "math_stats": stats_msg
         }
@@ -341,9 +633,12 @@ class QuantitativeRiskReflector(BaseAgent):
         self.memory_bank.append(record)
         
         # 【进阶方向4】：经验反馈形成强化学习闭环
-        # 如果有真实的 PnL 盈亏出现，根据盈亏扣除或者增加过去相同标的、相同决策下累积相似经验的权重！
-        if decision in ["BUY", "SELL"] and pnl_percent != 0:
-            self.memory_bank.update_experience_score_by_action(ticker, decision, pnl_percent)
+        if action in ["BUY", "SELL"] and actual_pnl != 0:
+            self.memory_bank.update_experience_score_by_action(
+                ticker=ticker, 
+                action_taken=action, 
+                pnl_result=actual_pnl
+            )
             
         # 【进阶方向3】：偶尔尝试触发结晶
         try:
