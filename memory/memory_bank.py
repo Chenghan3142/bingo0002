@@ -28,7 +28,6 @@ class MemoryBank:
         # 向量知识库初始化 (高维空间存储)
         print("[MemoryBank] 正在初始化 HuggingFace Embeddings 与 ChromaDB 以支持记忆 RAG...")
         # 强制使得 langchain/huggingface 不去走被封的大陆直连或者受到无代理影响
-        import os
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
         
         try:
