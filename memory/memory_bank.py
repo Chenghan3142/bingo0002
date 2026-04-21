@@ -2,6 +2,7 @@ import json
 import os
 import datetime
 from .db_middleware import DatabaseMiddleware
+from .evolver_rl import EvolverSelector, extract_learning_signals
 try:
     from langchain_chroma import Chroma
     from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -23,7 +24,9 @@ class MemoryBank:
         
         self.persist_directory = os.path.join(base_dir, persist_directory) if not os.path.isabs(persist_directory) else persist_directory
         self.principle_file = os.path.join(base_dir, principle_file) if not os.path.isabs(principle_file) else principle_file
+        self.selector_state_file = os.path.join(base_dir, "data/json/evolver_selector_state.json")
         self.principles = self._load_principles()
+        self.evolver_selector = EvolverSelector(self.selector_state_file)
         
         # 向量知识库初始化 (高维空间存储)
         print("[MemoryBank] 正在初始化 HuggingFace Embeddings 与 ChromaDB 以支持记忆 RAG...")
@@ -86,6 +89,10 @@ class MemoryBank:
             return None
             
         doc_id = f"exp_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{ticker}_{role}"
+        learning_signals = extract_learning_signals(
+            content,
+            extras=[ticker, role, sentiment_or_regime, action_taken]
+        )
         
         # 将最新的 PnL 转化为初步的 score：赚钱的话增加其初始权重
         initial_score = 1.0 + (pnl_percent / 10.0) if pnl_percent > 0 else 1.0
@@ -96,6 +103,7 @@ class MemoryBank:
             "role": role,                               # 方向5: 分角色独立记忆
             "market_regime": sentiment_or_regime,       # 方向2: 区分市场环境
             "action_taken": action_taken,
+            "learning_signals": learning_signals,
             "score": initial_score,                     # 方向4: 置信度分数打分反馈基准
             "crystallized": False                       # 方向3: 是否已结晶为公理
         }
@@ -120,17 +128,57 @@ class MemoryBank:
         try:
             results = self.vector_store.similarity_search_with_score(
                 query=current_scene_desc, 
-                k=top_k, 
+                k=max(top_k * 3, top_k), 
                 filter=filter_dict
             )
-            return [{"content": res[0].page_content, "score": res[0].metadata.get("score"), "dist": res[1]} for res in results]
+            query_signals = extract_learning_signals(
+                current_scene_desc,
+                extras=[role, current_regime]
+            )
+
+            candidates = []
+            for res in results:
+                candidates.append({
+                    "content": res[0].page_content,
+                    "score": res[0].metadata.get("score"),
+                    "dist": res[1],
+                    "metadata": res[0].metadata,
+                })
+
+            reranked = self.evolver_selector.rerank_candidates(candidates, query_signals)
+            trimmed = reranked[:top_k]
+            return [
+                {
+                    "content": item["content"],
+                    "score": item.get("metadata", {}).get("score", item.get("score", 1.0)),
+                    "dist": item.get("dist"),
+                    "selector_score": item.get("selector_score"),
+                    "selection_path": item.get("selection_path"),
+                }
+                for item in trimmed
+            ]
         except Exception:
             return []
 
-    def update_experience_score_by_action(self, ticker: str, action_taken: str, pnl_result: float):
-        """高级特性4：强化学习雏形，根据最新策略收益修改同类历史经验的权威性"""
+    def update_experience_score_by_action(
+        self,
+        ticker: str,
+        action_taken: str,
+        pnl_result: float,
+        context_text: str = "",
+        role: str = "System",
+        market_regime: str = "General",
+    ):
+        """Evolver风格强化学习：signals+selector+drift 的结果反馈。"""
         if not self.vector_store: return
-        
+
+        query_signals = extract_learning_signals(
+            context_text,
+            extras=[ticker, role, market_regime, action_taken]
+        )
+        advice = self.evolver_selector.build_memory_advice(query_signals)
+        score_delta = self.evolver_selector.outcome_score_delta(action_taken, pnl_result, advice)
+
         try:
             # 找到过去做出类似决定的向量文档 (简化操作，找出该 ticker 最近1个月的同向决策)
             # 在 ChromaDB 里比较复杂，所以我们采用 get 全部比对过滤的方式
@@ -141,11 +189,10 @@ class MemoryBank:
                 if metadata.get('ticker') == ticker and metadata.get('action_taken') == action_taken:
                     doc_id = all_docs['ids'][i]
                     current_score = metadata.get("score", 1.0)
-                    
-                    if pnl_result > 0:
-                        metadata["score"] = current_score + 0.1 # 奖赏
-                    elif pnl_result < 0:
-                        metadata["score"] = current_score - 0.2 # 严厉惩罚
+
+                    metadata["score"] = current_score + score_delta
+                    metadata["learning_signals"] = metadata.get("learning_signals") or query_signals
+                    metadata["last_selection_path"] = advice.get("selection_path", "selection:stable")
                         
                     content = all_docs['documents'][i]
                     new_doc = Document(page_content=content, metadata=metadata)
@@ -156,6 +203,8 @@ class MemoryBank:
                     else:
                         self.vector_store.delete(ids=[doc_id])
                         self.vector_store.add_documents([new_doc], ids=[doc_id])
+
+            self.evolver_selector.register_outcome(query_signals, action_taken, pnl_result)
         except Exception as e:
             pass
 

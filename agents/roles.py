@@ -701,10 +701,14 @@ class QuantitativeRiskReflector(BaseAgent):
         
         # 【进阶方向4】：经验反馈形成强化学习闭环
         if action in ["BUY", "SELL"] and actual_pnl != 0:
+            outcome_context = f"{reflection_text}\n{stats_msg}\n决策={action}, 标的={ticker}, pnl={actual_pnl:.3f}%"
             self.memory_bank.update_experience_score_by_action(
                 ticker=ticker, 
                 action_taken=action, 
-                pnl_result=actual_pnl
+                pnl_result=actual_pnl,
+                context_text=outcome_context,
+                role="System",
+                market_regime="General",
             )
             
         # 【进阶方向3】：偶尔尝试触发结晶
