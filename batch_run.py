@@ -3,6 +3,7 @@ import subprocess
 import time
 import akshare as ak
 import sys
+import concurrent.futures
 
 def get_sector_leaders(num_sectors=50, leaders_per_sector=12):
     """
@@ -19,20 +20,33 @@ def get_sector_leaders(num_sectors=50, leaders_per_sector=12):
         sectors = sectors[:num_sectors]
 
     print(f"成功获取 {len(sectors)} 个板块，开始拉取各板块成分股...")
-    
-    all_leaders = set()
-    for sector in sectors:
+
+    def fetch_sector_leaders(sector):
         try:
             cons = ak.stock_board_industry_cons_em(symbol=sector)
-            # 东财接口默认排序常带有市值或资金热度，直接取前N只作为代表性龙头
             leaders = cons['代码'].head(leaders_per_sector).tolist()
-            all_leaders.update(leaders)
-            print(f"[{sector}] 获取完成，抽取 {len(leaders)} 只")
+            return sector, leaders, None
         except Exception as e:
-            print(f"板块 [{sector}] 获取异常: {e}")
-            time.sleep(1)
-            continue
-            
+            return sector, [], e
+
+    all_leaders = set()
+    max_workers = min(12, max(4, len(sectors) // 4))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(fetch_sector_leaders, sector): sector for sector in sectors}
+        for future in concurrent.futures.as_completed(future_map):
+            sector = future_map[future]
+            try:
+                sector_name, leaders, err = future.result()
+                if err is not None:
+                    print(f"板块 [{sector_name}] 获取异常: {err}")
+                    continue
+                all_leaders.update(leaders)
+                print(f"[{sector_name}] 获取完成，抽取 {len(leaders)} 只")
+            except Exception as e:
+                print(f"板块 [{sector}] 获取异常: {e}")
+                time.sleep(1)
+                continue
+
     return list(all_leaders)
 
 import concurrent.futures

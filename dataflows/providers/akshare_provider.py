@@ -2,16 +2,34 @@ from .base import BaseDataProvider
 import akshare as ak
 
 class AkShareProvider(BaseDataProvider):
-    def fetch_sentiment_data(self, ticker: str):
+    def fetch_sentiment_data(self, ticker: str, cutoff_date: str = None):
+        """返回截止到 cutoff_date 的新闻摘要（若 cutoff_date=None 则返回最新）。"""
         try:
             news_df = ak.stock_news_em(symbol=ticker)
+            if news_df is None or news_df.empty:
+                return "近期无明显新闻热点。"
+
+            # 如果提供了 cutoff_date（格式 YYYY-MM-DD），则过滤掉未来的新闻
+            if cutoff_date:
+                try:
+                    cutoff_int = int(str(cutoff_date)[:10].replace('-', ''))
+                    def _to_int(d):
+                        try:
+                            s = str(d)[:10]
+                            return int(s.replace('-', ''))
+                        except Exception:
+                            return 0
+                    news_df = news_df[news_df['发布时间'].apply(lambda x: _to_int(x) <= cutoff_int)]
+                except Exception:
+                    pass
+
             if not news_df.empty:
                 return " | ".join(news_df['新闻标题'].head(3).tolist())
             return "近期无明显新闻热点。"
         except Exception as e:
             return f"实时新闻数据查询受限: {e}"
 
-    def fetch_fundamental_data(self, ticker: str):
+    def fetch_fundamental_data(self, ticker: str, cutoff_date: str = None):
         try:
             info_df = ak.stock_individual_info_em(symbol=ticker)
             info_dict = dict(zip(info_df['item'], info_df['value']))
@@ -32,18 +50,36 @@ class AkShareProvider(BaseDataProvider):
         except Exception as e:
             return f"财务API请求遇到阻碍: {e}"
 
-    def fetch_macro_data(self):
+    def fetch_macro_data(self, cutoff_date: str = None):
+        """返回截止到 cutoff_date 的上证指数近3个交易日表现。"""
         try:
             sh_df = ak.stock_zh_index_daily(symbol="sh000001")
+            if cutoff_date:
+                try:
+                    cutoff_dt = cutoff_date[:10]
+                    sh_df['date_str'] = sh_df['date'].astype(str)
+                    sh_df = sh_df[sh_df['date_str'] <= cutoff_dt]
+                except Exception:
+                    pass
+
             recent_sh = sh_df.tail(3)[['date', 'close', 'volume']].to_dict('records')
             return f"上证指数最近3个交易日表现: {recent_sh}"
         except Exception as e:
             return f"上证大盘数据抓取报错: {e}"
 
-    def fetch_smart_money_data(self, ticker: str):
+    def fetch_smart_money_data(self, ticker: str, cutoff_date: str = None):
         try:
             market = "sh" if str(ticker).startswith("6") else "sz"
             fund_df = ak.stock_individual_fund_flow(stock=ticker, market=market)
+            if cutoff_date:
+                try:
+                    cutoff_dt = cutoff_date[:10]
+                    if 'date' in fund_df.columns:
+                        fund_df['date_str'] = fund_df['date'].astype(str)
+                        fund_df = fund_df[fund_df['date_str'] <= cutoff_dt]
+                except Exception:
+                    pass
+
             recent_fund = fund_df.tail(2)[['收盘价', '主力净流入-净额', '涨跌幅']].to_dict('records')
             return f"近2个交易日的大单主力资金净流入(元)与价格变动特征: {recent_fund}"
         except Exception as e:

@@ -270,6 +270,8 @@ with tab_overview:
             if records:
                 df = pd.DataFrame(records)
                 if 'pnl_percent' in df.columns:
+                    if 'reward_score' not in df.columns:
+                        df['reward_score'] = 0.0
                     df['pnl_ratio'] = df['pnl_percent'] / 100.0
                     initial_capital = 100000.0
                     equity = [initial_capital]
@@ -285,6 +287,8 @@ with tab_overview:
                     valid_trades = df[df['pnl_ratio'] != 0]
                     win_rate = len(df[df['pnl_ratio'] > 0]) / len(valid_trades) * 100 if len(valid_trades) > 0 else 0
                     trade_count = len(df[df['decision'] != 'HOLD'])
+                    avg_reward = df['reward_score'].mean()
+                    cumulative_reward = df['reward_score'].fillna(0).cumsum().iloc[-1] if len(df) > 0 else 0.0
                     
                     # 使用卡片化布局顶部指标
                     st.markdown("### 🏆 核心绩效指标 (Key Performance Indicators)")
@@ -295,10 +299,18 @@ with tab_overview:
                         m2.metric(label="📉 最大回撤 (MDD)", value=f"{max_drawdown:.2f}%", delta=f"{max_drawdown:.2f}%", delta_color="inverse")
                         m3.metric(label="🎯 产生交易胜率", value=f"{win_rate:.2f}%")
                         m4.metric(label="🔄 总策略捕捉单数", value=f"{trade_count} 笔")
+
+                    m5, m6 = st.columns(2)
+                    with m5:
+                        st.metric(label="🧠 平均 Reward", value=f"{avg_reward:.4f}")
+                    with m6:
+                        st.metric(label="📊 累计 Reward", value=f"{cumulative_reward:.4f}")
                     
                     st.markdown("<br>", unsafe_allow_html=True)
                     st.markdown("### 📈 策略复利净值曲线 (Equity Curve)")
                     st.area_chart(df['equity'], use_container_width=True, color="#4CAF50")
+                    st.markdown("### 🔥 Reward 走势")
+                    st.line_chart(df['reward_score'].fillna(0).cumsum(), use_container_width=True)
             else:
                 st.info("💡 暂无有效交易数据，请先点击侧边栏运行一次推演。")
         except Exception as e:
@@ -314,6 +326,8 @@ with tab_history:
                 records = json.load(f)
             if records:
                 st.dataframe(pd.DataFrame(records), use_container_width=True, height=600)
+                if 'reward_score' in pd.DataFrame(records).columns:
+                    st.caption("表格中 `reward_score`、`reward_text` 和 `reward_stats` 表示新的强化学习回报信号。")
             else:
                 st.info("数据为空。")
         except:

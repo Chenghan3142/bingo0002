@@ -1,8 +1,17 @@
 import os
 from langchain_chroma import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except Exception:
+    try:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+    except Exception:
+        HuggingFaceEmbeddings = None
 
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+if HuggingFaceEmbeddings is None:
+    print("[view_rag] WARNING: HuggingFaceEmbeddings 未安装，若需启用向量化功能请运行: pip install -U langchain-huggingface")
+else:
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 db_path = os.path.join(base_dir, "data", "vector_db", "chroma_db")

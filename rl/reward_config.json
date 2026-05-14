@@ -1,0 +1,19 @@
+{
+  "return_scale": 5.0,
+  "return_multiplier": 0.9,
+  "direction_bonus": 0.05,
+  "direction_penalty": 0.05,
+  "volatility_penalty_scale": 0.04,
+  "volatility_penalty_weight": 0.18,
+  "drawdown_penalty_scale": 0.06,
+  "drawdown_penalty_weight": 0.42,
+  "turnover_penalty_base": 0.018,
+  "turnover_penalty_position_weight": 0.045,
+  "exposure_penalty_weight": 0.03,
+  "loss_streak_penalty_window": 4.0,
+  "loss_streak_penalty_weight": 0.12,
+  "hold_penalty_scale": 5.0,
+  "hold_penalty_weight": 0.05,
+  "reward_floor": -1.5,
+  "reward_ceiling": 1.5
+}

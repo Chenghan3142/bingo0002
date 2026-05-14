@@ -1,5 +1,7 @@
 import os
+import argparse
 import sys
+import subprocess
 import urllib.request
 
 # 强行拦截并绕过 macOS 系统的底层网络配置中的全局代理
@@ -35,8 +37,154 @@ import pandas as pd
 import time
 import datetime
 import concurrent.futures
+import json
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="A股智能投研多智能体系统")
+    parser.add_argument("ticker", nargs="?", default=None, help="A股股票代码，例如 600519")
+    parser.add_argument("backtest_limit", nargs="?", type=int, default=None, help="最近回测天数")
+    parser.add_argument("--auto-tune", action="store_true", help="回测结束后自动运行 reward 调参")
+    parser.add_argument("--tune-window", type=int, default=120, help="自动调参时使用最近多少条回测记录")
+    parser.add_argument("--tune-samples", type=int, default=80, help="自动调参时随机采样候选数量")
+    parser.add_argument("--tune-grid", action="store_true", help="自动调参时使用网格搜索")
+    parser.add_argument("--tune-dry-run", action="store_true", help="自动调参只生成报告，不写回配置")
+    parser.add_argument("--tune-output-path", default=None, help="自动调参输出配置路径，默认覆盖 rl/reward_config.json")
+    parser.add_argument("--tune-report-dir", default=None, help="自动调参图表报告目录")
+    parser.add_argument("--no-train", action="store_true", help="跳过 DL 模型训练（用于加速回测）")
+    parser.add_argument("--train-epochs", type=int, default=20, help="训练时使用的 epochs 数量（默认20）")
+    return parser.parse_args()
+
+
+def run_auto_tune(args):
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "auto_tune_reward.py")
+    cmd = [
+        sys.executable,
+        script_path,
+        "--window", str(args.tune_window),
+        "--samples", str(args.tune_samples),
+    ]
+    if args.tune_grid:
+        cmd.append("--grid")
+    if args.tune_dry_run:
+        cmd.append("--dry-run")
+    if args.tune_output_path:
+        cmd.extend(["--output-path", args.tune_output_path])
+    if args.tune_report_dir:
+        cmd.extend(["--report-dir", args.tune_report_dir])
+
+    print("\n>>>> 回测已完成，开始执行 reward 自动调参与图表报告生成 ... <<<<")
+    subprocess.run(cmd, check=False)
+
+
+def _parse_action(decision: str) -> tuple[str, float]:
+    raw = str(decision or "HOLD").upper().strip()
+    if raw.startswith("BUY"):
+        action = "BUY"
+    elif raw.startswith("SELL"):
+        action = "SELL"
+    else:
+        action = "HOLD"
+
+    position = 1.0
+    cleaned = raw.replace("BUY", "").replace("SELL", "").replace("%", "").strip()
+    if cleaned:
+        try:
+            position = max(0.0, min(1.0, float(cleaned) / 100.0))
+        except ValueError:
+            position = 1.0
+
+    return action, position
+
+
+def save_run_summary(ticker: str, backtest_limit: int | None, run_rows: list[dict], auto_tune_enabled: bool):
+    if not run_rows:
+        return
+
+    summary_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "monitoring", "backtest_runs")
+    os.makedirs(summary_dir, exist_ok=True)
+
+    total_trades = len([row for row in run_rows if row["action"] in {"BUY", "SELL"}])
+    avg_real_pnl = sum(row["real_pnl"] for row in run_rows) / len(run_rows)
+    avg_effective_pnl = sum(row["effective_pnl"] for row in run_rows) / len(run_rows)
+    win_rate = len([row for row in run_rows if row["effective_pnl"] > 0]) / len(run_rows)
+
+    summary = {
+        "ticker": ticker,
+        "backtest_limit": backtest_limit,
+        "auto_tune_enabled": auto_tune_enabled,
+        "total_days": len(run_rows),
+        "total_trades": total_trades,
+        "avg_real_pnl": avg_real_pnl,
+        "avg_effective_pnl": avg_effective_pnl,
+        "win_rate": win_rate,
+        "start_date": run_rows[0]["date"],
+        "end_date": run_rows[-1]["date"],
+        "rows": run_rows,
+    }
+
+    file_path = os.path.join(summary_dir, f"{ticker}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    print(f"\n📊 回测监控摘要已保存至: {file_path}")
+
+
+def fetch_external_knowledge(ticker):
+    """并发拉取新闻与研报，减少 IO 等待。"""
+    real_news_kb = []
+
+    def fetch_news():
+        news_items = []
+        news_df = ak.stock_news_em(symbol=ticker)
+        for _, row in news_df.head(100).iterrows():
+            pub_time = str(row.get('发布时间', '2000-01-01'))
+            try:
+                date_int = int(pub_time[:10].replace('-', ''))
+            except:
+                date_int = 20000101
+            news_items.append({
+                "page_content": "[外围资讯] " + str(row['新闻标题']) + " : " + str(row['新闻内容']),
+                "metadata": {"date_int": date_int}
+            })
+        return news_items, len(news_df)
+
+    def fetch_reports():
+        report_items = []
+        report_df = ak.stock_research_report_em(symbol=ticker)
+        if report_df is not None and not report_df.empty:
+            for _, row in report_df.iterrows():
+                pub_time = str(row.get('日期', '2000-01-01'))
+                try:
+                    date_int = int(pub_time[:10].replace('-', ''))
+                except:
+                    date_int = 20000101
+                content = f"[券商研报] 机构: {row.get('机构', '未知')} | 评级: {row.get('东财评级', '未知')} | 核心观点摘要: {row.get('报告名称', '')}"
+                report_items.append({"page_content": content, "metadata": {"date_int": date_int}})
+        return report_items, 0 if report_df is None else len(report_df)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_news = executor.submit(fetch_news)
+        future_reports = executor.submit(fetch_reports)
+
+        try:
+            news_items, news_count = future_news.result()
+            real_news_kb.extend(news_items)
+            print(f"成功攫取 {news_count} 条关于 {ticker} 的近期新闻。")
+        except Exception as e:
+            print(f"新闻抓取受限: {e}")
+
+        try:
+            report_items, report_count = future_reports.result()
+            real_news_kb.extend(report_items)
+            print(f"成功攫取 {report_count} 份专业研报注入向知识库。")
+        except Exception as e:
+            print(f"研报提取遭遇阻碍: {e}")
+
+    return real_news_kb
 
 def main():
+    args = parse_args()
     print("=== 启动 A股智能投研多智能体系统：全年历史回测模式 ==================")
     print("本回测将跨越过去约3年（全真实历史数据）。")
     print("以天为单位滑动，收集每日特征 -> 做出交易决策 -> T+1日结算盈亏存入经验库。")
@@ -45,9 +193,9 @@ def main():
     # 1. 载入全局长期记忆突触
     memory_bank = MemoryBank()
 
-    if len(sys.argv) > 1:
-        ticker = sys.argv[1]
-        backtest_limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    if args.ticker:
+        ticker = args.ticker
+        backtest_limit = args.backtest_limit
     else:
         try:
             ticker = ""
@@ -56,11 +204,14 @@ def main():
                 if not ticker:
                     print("股票代码不能为空，请重新输入。")
             
-            backtest_days_input = input("请输入您想回测的最近交易日天数 (直接回车默认一整年): ").strip()
-            if backtest_days_input and backtest_days_input.isdigit():
-                backtest_limit = int(backtest_days_input)
+            if args.backtest_limit is not None:
+                backtest_limit = args.backtest_limit
             else:
-                backtest_limit = None
+                backtest_days_input = input("请输入您想回测的最近交易日天数 (直接回车默认一整年): ").strip()
+                if backtest_days_input and backtest_days_input.isdigit():
+                    backtest_limit = int(backtest_days_input)
+                else:
+                    backtest_limit = None
         except (EOFError, KeyboardInterrupt):
             print("\n程序已取消。")
             return
@@ -100,46 +251,8 @@ def main():
 
     # 通过 API 获取标的真实历史新闻，代替 mock
     print(f"\n[系统新闻获取] 获取真实的 {ticker} 新鲜历史新闻以构建知识库 (RAG DB) ...")
-    real_news_kb = []
-    
-    # 1. 抓取新闻
-    try:
-        news_df = ak.stock_news_em(symbol=ticker)
-        for _, row in news_df.head(100).iterrows():
-            pub_time = str(row.get('发布时间', '2000-01-01'))
-            try:
-                date_int = int(pub_time[:10].replace('-', ''))
-            except:
-                date_int = 20000101
-                
-            real_news_kb.append({
-                "page_content": "[外围资讯] " + str(row['新闻标题']) + " : " + str(row['新闻内容']),
-                "metadata": {"date_int": date_int}
-            })
-        print(f"成功攫取 {len(news_df)} 条关于 {ticker} 的近期新闻。")
-    except Exception as e:
-        print(f"新闻抓取受限: {e}")
-
-    # 2. 抓取机构历史深度研报 (大幅扩充RAG库容量与深度)
     print(f"[研报与深度评级] 正在获取 {ticker} 历史券商研报补充认知...")
-    try:
-        report_df = ak.stock_research_report_em(symbol=ticker)
-        if report_df is not None and not report_df.empty:
-            for _, row in report_df.iterrows():
-                pub_time = str(row.get('日期', '2000-01-01'))
-                try:
-                    date_int = int(pub_time[:10].replace('-', ''))
-                except:
-                    date_int = 20000101
-                
-                content = f"[券商研报] 机构: {row.get('机构', '未知')} | 评级: {row.get('东财评级', '未知')} | 核心观点摘要: {row.get('报告名称', '')}"
-                real_news_kb.append({
-                    "page_content": content,
-                    "metadata": {"date_int": date_int}
-                })
-            print(f"成功攫取 {len(report_df)} 份专业研报注入向知识库。")
-    except Exception as e:
-        print(f"研报提取遭遇阻碍: {e}")
+    real_news_kb = fetch_external_knowledge(ticker)
 
     if not real_news_kb:
         print("未抓取到任何外部文本，使用内置降级备用认知。")
@@ -158,7 +271,10 @@ def main():
     # == 使用回测的前60天作为真实的强化学习数据，真实训练量化模型 ==
     print("\n>>>> 用前置的 60 天真实盘面数据训练 LSTM 量化预测模型 <<<<")
     train_df = df_hist.head(60) # 截取前60天数据训练
-    dl_engine.train_on_history(train_df, epochs=20)
+    if getattr(args, 'no_train', False):
+        print("[DL Engine] 检测到 --no-train，跳过模型训练以加速回测。")
+    else:
+        dl_engine.train_on_history(train_df, epochs=getattr(args, 'train_epochs', 20))
     
     # == 实例化全链路多智能体团队 ==
     # 1. 分析团队
@@ -180,6 +296,7 @@ def main():
     
     start_index = 60 # 从已经过拟合/训练完毕后的第60天起开始向后滚动盘面
     total_days = len(df_hist) - 1 # 留最后一天给 T+1 用
+    run_rows = []
 
     if backtest_limit is not None and backtest_limit > 0:
         # 如果用户指定了回测天数，我们把 start_index 往后推，只跑最近的 N 天
@@ -240,9 +357,26 @@ def main():
         
         # 迭代官完成记录与数学期望计算
         reflector_agent.step(ticker, decision, all_reports, pnl_percent=real_pnl)
+
+        action, position = _parse_action(decision)
+        effective_pnl = real_pnl * position if action == "BUY" else ((-real_pnl) * position if action == "SELL" else 0.0)
+        run_rows.append({
+            "date": target_date,
+            "next_date": next_day_date,
+            "decision": decision,
+            "action": action,
+            "position": position,
+            "real_pnl": real_pnl,
+            "effective_pnl": effective_pnl,
+        })
         
         # 为了不刷屏太快，微微暂停 0.1秒
         time.sleep(0.1)
+
+    save_run_summary(ticker, backtest_limit, run_rows, args.auto_tune)
+
+    if args.auto_tune:
+        run_auto_tune(args)
    
 if __name__ == "__main__":
     main()

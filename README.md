@@ -1,4 +1,90 @@
-# TradingAgents-RAG-DL: Multi-Agent System for Quantitative Trading
+# TradingAgents_RAG_DL
+
+一个结合 `RAG`、`Deep Learning`、`Reward` 反馈和自动调参的 A 股多智能体投研系统。
+
+## 你现在可以做什么
+
+- `main.py`：单标的历史回测
+- `scripts/auto_tune_reward.py`：基于回测日志自动调优 `rl/reward_config.json`
+- `batch_run.py`：批量并发回测
+- `webui.py`：结果与知识库可视化
+
+## 一键回测 + 自动调参
+
+回测结束后自动运行 reward 调参，并生成图表报告：
+
+```bash
+python3 main.py 600519 120 --auto-tune
+```
+
+常用参数：
+
+```bash
+python3 main.py 600519 120 --auto-tune --tune-window 120 --tune-samples 80
+python3 main.py 600519 120 --auto-tune --tune-grid
+python3 main.py 600519 120 --auto-tune --tune-dry-run
+python3 main.py 600519 120 --auto-tune --tune-report-dir data/reward_tuning_reports/custom_run
+```
+
+## 单独运行 reward 调参
+
+随机搜索：
+
+```bash
+python3 scripts/auto_tune_reward.py --window 120 --samples 80
+```
+
+Optuna 自动搜索：
+
+```bash
+python3 scripts/auto_tune_reward.py --window 120 --optuna-trials 40
+```
+
+只预览不写回配置：
+
+```bash
+python3 scripts/auto_tune_reward.py --window 120 --samples 80 --dry-run
+```
+
+## 输出目录
+
+- 回测日志：`data/json/reflections.json`
+- Reward 配置：`rl/reward_config.json`
+- 图表报告：`data/reward_tuning_reports/<timestamp>/`
+- 回测监控摘要：`data/monitoring/backtest_runs/<timestamp>.json`
+
+## 依赖
+
+核心依赖见 `requirements.txt`，其中 reward 调参图表和 Optuna 调参分别依赖 `matplotlib` 和 `optuna`。
+# TradingAgents_RAG_DL
+
+## Reward 自动调参
+
+你可以用 `scripts/auto_tune_reward.py` 基于最近的回测日志自动搜索更优的 `rl/reward_config.json`。
+
+### 示例
+
+```bash
+python3 scripts/auto_tune_reward.py --window 120 --samples 80
+```
+
+只做演练、不写回配置：
+
+```bash
+python3 scripts/auto_tune_reward.py --window 120 --samples 80 --dry-run
+```
+
+使用小型网格搜索：
+
+```bash
+python3 scripts/auto_tune_reward.py --window 90 --grid
+```
+
+### 输入输出
+
+- 输入：`data/json/reflections.json`
+- 输出：`rl/reward_config.json`
+- 报告：终端打印基线、最优参数和指标差异# TradingAgents-RAG-DL: Multi-Agent System for Quantitative Trading
 
 🎓 **面向金融量化研究的大语言模型多智能体协作框架**
 
@@ -18,10 +104,6 @@
 3. 再次双击 `start.bat`，即可启动主程序！
 
 ### 🍎 MacOS / Linux 用户
-1. 打开终端，运行脚本：
-   ```bash
-   bash start.sh
-   ```
 2. 脚本会自动创建虚拟环境和 `.env` 配置文件。**使用编辑器打开 `.env` 并填入您的 API 密钥**。
 3. 再次运行 `bash start.sh`，即可启动主程序！
 
@@ -61,6 +143,3 @@ TradingAgents_RAG_DL/
 1. **更换大模型与接口**: 你可以在修改 `.env` 文件的同时，在对应配置处将 `base_url` 改为国内大模型（例如智谱、Moonshot、Deepseek）的中转接口进行低成本测试。
 2. **修改 RAG 数据库源**: 将你关注的证券研报放入本地目录，并在 `rag/retriever.py` 中引入对应的 PDF/TXT 文本解析器重新建立 ChromaDB 向量本地库。
 3. **结合强化学习 (RL)**: 在 `main.py` 的架构预留层，引入 `Stable-Baselines3` 或 `FinRL` 将当前策略验证与真实的 PPO/DQN 算法对接。
-
----
-📝 *If you find this repository useful in your research, consider citing it or starring the repo!*

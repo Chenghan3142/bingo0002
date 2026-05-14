@@ -3,7 +3,13 @@ import os
 import datetime
 from typing import List, Dict, Optional
 from langchain_chroma import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+except Exception:
+    try:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+    except Exception:
+        HuggingFaceEmbeddings = None
 from langchain_core.documents import Document
 
 class AdvancedMemoryBank:
@@ -23,7 +29,10 @@ class AdvancedMemoryBank:
         self.principle_file = os.path.join(base_dir, principle_file) if not os.path.isabs(principle_file) else principle_file
         
         # 初始化嵌入模型 (经验RAG化)
-        self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        if HuggingFaceEmbeddings is None:
+            print("[AdvancedMemoryBank] WARNING: HuggingFaceEmbeddings 未能导入，若需向量化请安装: pip install -U langchain-huggingface")
+        else:
+            self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         self.vector_store = Chroma(
             collection_name="agent_experiences",
             embedding_function=self.embeddings,

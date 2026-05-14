@@ -1,7 +1,27 @@
-# RAG Subsystem
+"""RAG Subsystem
+
+This module uses HuggingFaceEmbeddings. Newer LangChain versions
+moved embeddings into the `langchain-huggingface` package. Try to
+import from `langchain_huggingface` first and gracefully fall back
+to older packages if unavailable. If missing, print an install hint.
+"""
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_community.embeddings import HuggingFaceEmbeddings
+try:
+    # Preferred new package
+    from langchain_huggingface import HuggingFaceEmbeddings
+except Exception:
+    try:
+        # fallback for older layouts used in some environments
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+    except Exception:
+        # Last resort: try the older langchain embedding module
+        try:
+            from langchain.embeddings import HuggingFaceEmbeddings
+        except Exception:
+            HuggingFaceEmbeddings = None
+            print("[RAG Subsystem] WARNING: HuggingFaceEmbeddings import failed.\n"
+                  "建议安装/更新依赖: pip install -U langchain-huggingface")
 import datetime
 import os
 
@@ -14,7 +34,10 @@ class SimpleRAG:
     def _build_index(self):
         print("[RAG Subsystem] 正在初始化 HuggingFace Embeddings 与 ChromaDB...")
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        
+
+        if HuggingFaceEmbeddings is None:
+            raise RuntimeError("HuggingFaceEmbeddings 未能导入，请运行: pip install -U langchain-huggingface")
+
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         
         documents = []

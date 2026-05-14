@@ -4,6 +4,7 @@ import time
 from dataflows.providers.akshare_provider import AkShareProvider
 import json
 import os
+from rl.reward import compute_trade_reward
 
 provider = AkShareProvider()
 
@@ -126,7 +127,8 @@ class SentimentAnalyst(BaseAgent):
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"挖掘 [{ticker}] 社交媒体(股吧、雪球等)新闻散户情绪...")
-        news_str = provider.fetch_sentiment_data(ticker)
+        # 避免未来函数：传入 target_date 作为截止日期，provider 会过滤掉晚于 target_date 的新闻
+        news_str = provider.fetch_sentiment_data(ticker, cutoff_date=target_date)
         self.log(f"✅ 成功抓取舆情: {news_str}")
 
         prompt_template = self.config.get(
@@ -153,7 +155,7 @@ class FundamentalAnalyst(BaseAgent):
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"分析 [{ticker}] 财报数据(PE, PB)及行业研报估值...")
-        data_str = provider.fetch_fundamental_data(ticker)
+        data_str = provider.fetch_fundamental_data(ticker, cutoff_date=target_date)
         self.log(f"✅ 成功抓取基本面核心估值数据: {data_str}")
 
         prompt_template = self.config.get(
@@ -180,7 +182,7 @@ class MacroAnalyst(BaseAgent):
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"评估宏观周期、利率环境及大盘(上证指数)系统性风险...")
-        macro_str = provider.fetch_macro_data()
+        macro_str = provider.fetch_macro_data(cutoff_date=target_date)
         self.log(f"✅ 成功抓取近期上证大盘走势: {macro_str[:50]}...")
 
         prompt_template = self.config.get(
@@ -207,7 +209,7 @@ class SmartMoneyAnalyst(BaseAgent):
 
     def step(self, ticker: str, target_date: str = None):
         self.log(f"监控 [{ticker}] 北向资金、机构龙虎榜与大单净流入...")
-        flow_str = provider.fetch_smart_money_data(ticker)
+        flow_str = provider.fetch_smart_money_data(ticker, cutoff_date=target_date)
         self.log(f"✅ 成功提取主力大单资金净流入: {flow_str[:50]}...")
 
         prompt_template = self.config.get(
@@ -318,15 +320,21 @@ class QuantResearcherAgent(BaseAgent):
         
         dl_score = pred["score"]
         dl_confidence_str = pred.get("confidence", "50.0%").replace("%", "")
-        
+
         try:
             dl_confidence = min(float(dl_confidence_str) / 100.0, 1.0)
         except:
             dl_confidence = 0.5
-            
+
         trend = "看多" if dl_score > 0 else "看空"
-        
-        self.log(f"LSTM 预测 (无情绪纯数学打分): {pred['trend']} 原始分[{dl_score:.4f}] 预测置信度[{dl_confidence:.2f}]")
+
+        self.log(f"LSTM 预测 (无情绪纯数学打分): {pred.get('trend','')} 原始分[{dl_score:.4f}] 预测置信度[{dl_confidence:.2f}]")
+
+        # 置信度过滤：若置信度过低则直接弃用该预测，避免无效模型输出影响决策
+        CONF_THRESHOLD = float(self.config.get("confidence_threshold", 0.3))
+        if dl_confidence < CONF_THRESHOLD:
+            self.log(f"LSTM预测置信度不足 ({dl_confidence:.2f} < {CONF_THRESHOLD}), 已过滤，不参与多空评分。")
+            return {"agent": self.name, "sentiment": "neutral", "confidence": 0.0, "reasoning": "LSTM置信度不足，已过滤", "thought_process": "置信度过滤"}
         
         # 2. 让 LLM 解释深度学习模型输出 (多模态 / Hybrid AI)
         prompt = self.config.get(
@@ -686,6 +694,20 @@ class QuantitativeRiskReflector(BaseAgent):
         else:
             stats_msg = "暂无足够实盘买卖样本计算凯利仓位与胜率。"
 
+        reward = compute_trade_reward(
+            action=action,
+            actual_pnl_percent=actual_pnl,
+            market_move_percent=pnl_percent,
+            historical_pnls=historical_pnls,
+            position=position,
+        )
+
+        reward_msg = (
+            f"reward={reward.reward:.3f}, return={reward.return_component:.3f}, "
+            f"risk_penalty={reward.volatility_penalty + reward.drawdown_penalty + reward.loss_streak_penalty:.3f}, "
+            f"behavior_penalty={reward.turnover_penalty + reward.exposure_penalty + reward.hold_penalty:.3f}"
+        )
+
         reflection_text = ""
         if action in ["BUY", "SELL"]:
             if actual_pnl < self.PARAMS.get("SEVERE_DRAWDOWN", -1.5):
@@ -701,6 +723,9 @@ class QuantitativeRiskReflector(BaseAgent):
             "ticker": ticker,
             "decision": action,
             "pnl_percent": round(actual_pnl, 2),
+            "reward_score": round(reward.reward, 4),
+            "reward_text": reward_msg,
+            "reward_stats": reward.to_dict(),
             "reflection_text": reflection_text,
             "math_stats": stats_msg
         }
@@ -713,7 +738,7 @@ class QuantitativeRiskReflector(BaseAgent):
             self.memory_bank.update_experience_score_by_action(
                 ticker=ticker, 
                 action_taken=action, 
-                pnl_result=actual_pnl
+                reward_signal=reward.reward
             )
             
         # 【进阶方向3】：偶尔尝试触发结晶
@@ -757,5 +782,5 @@ class QuantitativeRiskReflector(BaseAgent):
         except Exception as e:
             pass
 
-        self.log(f"【进化总结】: {reflection_text}")
+        self.log(f"【进化总结】: {reflection_text} | {reward_msg}")
         return reflection_text

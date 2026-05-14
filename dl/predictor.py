@@ -17,7 +17,8 @@ class StockTrendPredictor(nn.Module):
         lstm_out, _ = self.lstm(x)
         last_out = lstm_out[:, -1, :]
         predictions = self.linear(last_out)
-        return predictions[0]
+        # 返回 batch 输出 (N, output_size)
+        return predictions.squeeze(-1)
 
 class DLEngine:
     def __init__(self, weight_path="models/weights/pretrained_model.pth"):
@@ -43,6 +44,13 @@ class DLEngine:
     def train_on_history(self, df_hist: pd.DataFrame, window_size=10, epochs=20, lr=0.005):
         """真实使用前置历史数据训练网络"""
         print("[DL Engine] 启动真实数据环境训练...")
+
+        # 使用可用设备（优先 GPU）
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            print(f"[DL Engine] 检测到 CUDA，可在 GPU 上训练: {torch.cuda.get_device_name(0)}")
+
+        self.model.to(device)
         self.model.train()
         criterion = nn.MSELoss()
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -62,30 +70,44 @@ class DLEngine:
             X.append(scaled_data[i : i + window_size])
             # 预测第二天涨跌幅作为标签
             target_pnl = df_hist.iloc[i + window_size + 1]['涨跌幅'] / 10.0 # 缩放标签以便收敛
-            y.append([target_pnl])
-            
-        if not X: return
+            y.append(target_pnl)
+
+        if not X:
+            return
 
         X_tensor = torch.FloatTensor(np.array(X))
         y_tensor = torch.FloatTensor(np.array(y))
 
-        for epoch in range(epochs):
-            optimizer.zero_grad()
-            # 简化为不使用 batch 直接过一轮全量数据(仅为快速跑通)
-            preds = []
-            for i in range(len(X_tensor)):
-                out = self.model(X_tensor[i:i+1])
-                preds.append(out)
-            
-            preds_tensor = torch.stack(preds)
-            loss = criterion(preds_tensor, y_tensor)
-            loss.backward()
-            optimizer.step()
-            
-            if (epoch+1) % 5 == 0:
-                print(f"  -> Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.6f}")
+        # 将数据移动到设备并创建 DataLoader 批量训练
+        from torch.utils.data import TensorDataset, DataLoader
+        dataset = TensorDataset(X_tensor, y_tensor)
+        batch_size = min(32, max(1, len(dataset)))
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-        # 持久化
+        X_tensor = X_tensor.to(device)
+        y_tensor = y_tensor.to(device)
+
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            for xb, yb in loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                optimizer.zero_grad()
+                preds = self.model(xb)
+                # preds shape: (B,) or (B,1)
+                if preds.dim() == 2 and preds.size(1) == 1:
+                    preds = preds.squeeze(1)
+                loss = criterion(preds, yb)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item() * xb.size(0)
+
+            avg_loss = epoch_loss / len(dataset)
+            if (epoch+1) % max(1, epochs//5) == 0 or epoch == epochs-1:
+                print(f"  -> Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.6f}")
+
+        # 持久化到 CPU 兼容的状态字典
+        self.model.to('cpu')
         torch.save(self.model.state_dict(), self.weight_path)
         print(f"[DL Engine] 模型使用真实数据微调完毕，已保存至 {self.weight_path}")
 

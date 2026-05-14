@@ -21,6 +21,11 @@ def plot_backtest():
         print("回测记录不完整，缺少盈亏字段。")
         return
 
+    if 'reward_score' not in df.columns:
+        df['reward_score'] = 0.0
+    if 'reward_text' not in df.columns:
+        df['reward_text'] = ''
+
     # 由于我们系统里的 pnl_percent 指的是单次交易的实际盈亏占比 (例如 1.5 表示账户资产增长了 1.5%)
     # 我们将其转换为复利权益曲线 (Equity Curve)
     df['pnl_ratio'] = df['pnl_percent'] / 100.0
@@ -39,6 +44,8 @@ def plot_backtest():
     
     win_rate = len(df[df['pnl_ratio'] > 0]) / len(df[df['pnl_ratio'] != 0]) * 100 if len(df[df['pnl_ratio'] != 0]) > 0 else 0
     trade_count = len(df[df['decision'] != 'HOLD'])
+    avg_reward = df['reward_score'].mean()
+    positive_reward_rate = len(df[df['reward_score'] > 0]) / len(df[df['reward_score'] != 0]) * 100 if len(df[df['reward_score'] != 0]) > 0 else 0
     
     print("\n" + "="*40)
     print("       🚀 多智能体量化回测表现报告")
@@ -47,6 +54,8 @@ def plot_backtest():
     print(f"累计收益率:       {total_return:.2f}%")
     print(f"最大回撤 (MDD):   {max_drawdown:.2f}%")
     print(f"交易胜率:         {win_rate:.2f}%")
+    print(f"平均Reward:       {avg_reward:.4f}")
+    print(f"Reward为正占比:    {positive_reward_rate:.2f}%")
     
     if trade_count == 0:
         print("说明: 虽然由于 RAG 系统没有做多依据而没有交易，但这也是量化对冲规避风险的表现。")
@@ -64,6 +73,18 @@ def plot_backtest():
     save_path = os.path.join(base_dir, "data", "backtest_result.png")
     plt.savefig(save_path)
     print(f"\n📊 净值曲线已经生成并保存至: {save_path}")
+
+    reward_chart_path = os.path.join(base_dir, "data", "reward_curve.png")
+    plt.figure(figsize=(10, 4))
+    plt.plot(df['reward_score'].fillna(0).cumsum(), color='tab:blue', label='Cumulative Reward', linewidth=2)
+    plt.title("Cumulative Reward Curve")
+    plt.xlabel("Trade Steps")
+    plt.ylabel("Reward")
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(reward_chart_path)
+    print(f"📊 Reward 曲线已经生成并保存至: {reward_chart_path}")
 
 if __name__ == "__main__":
     plot_backtest()

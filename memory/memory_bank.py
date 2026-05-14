@@ -2,6 +2,7 @@ import json
 import os
 import datetime
 from .db_middleware import DatabaseMiddleware
+from rl.reward import compute_trade_reward
 try:
     from langchain_chroma import Chroma
     from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -45,14 +46,20 @@ class MemoryBank:
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
         
         try:
-            self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            # Preferred import path for new LangChain helper package
+            try:
+                from langchain_huggingface import HuggingFaceEmbeddings as _HFE
+            except Exception:
+                from langchain_community.embeddings import HuggingFaceEmbeddings as _HFE
+
+            self.embeddings = _HFE(model_name="sentence-transformers/all-MiniLM-L6-v2")
             self.vector_store = Chroma(
                 collection_name="agent_experiences",
                 embedding_function=self.embeddings,
                 persist_directory=self.persist_directory
             )
         except Exception as e:
-            print(f"[MemoryBank] 向量知识库初始化失败: {e}")
+            print(f"[MemoryBank] 向量知识库初始化失败: {e}\n如果出现导入错误，请运行: pip install -U langchain-huggingface")
             self.vector_store = None
 
     def _load_principles(self):
@@ -91,19 +98,22 @@ class MemoryBank:
             role="System", 
             sentiment_or_regime="General", # 可以通过后面的更新扩充
             content=record.get("reflection_text", ""), 
-            action_taken=record.get("decision", "HOLD")
+            action_taken=record.get("decision", "HOLD"),
+            reward_score=record.get("reward_score", record.get("pnl_percent", 0.0))
         )
         
-    def append_experience(self, ticker: str, role: str, sentiment_or_regime: str, content: str, action_taken: str, pnl_percent: float = 0.0):
+    def append_experience(self, ticker: str, role: str, sentiment_or_regime: str, content: str, action_taken: str, reward_score: float = 0.0):
         """高级特性1&2：记录经验并打上角色、市场环境标签"""
         if not self.vector_store or not content:
             return None
             
         doc_id = f"exp_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{ticker}_{role}"
         
-        # 将最新的 PnL 转化为初步的 score：赚钱的话增加其初始权重
-        base_score = self.CONFIG.get("INIT_SCORE", 1.0)
-        initial_score = base_score + (pnl_percent / 10.0) if pnl_percent > 0 else base_score
+        # 将最新 reward 转化为初步的 score：高 reward 经验获得更高权重
+        base_score = self.CONFIG.get("INIT_FITNESS", 1.0)
+        reward_signal = float(reward_score or 0.0)
+        initial_score = max(0.0, base_score + reward_signal)
+        initial_score = max(initial_score, self.CONFIG.get("FORGET_THRESHOLD", 0.2))
         
         metadata = {
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
@@ -112,6 +122,7 @@ class MemoryBank:
             "market_regime": sentiment_or_regime,       # 方向2: 区分市场环境
             "action_taken": action_taken,
             "score": initial_score,                     # 方向4: 置信度分数打分反馈基准
+            "reward_score": reward_signal,
             "crystallized": False                       # 方向3: 是否已结晶为公理
         }
         
@@ -142,7 +153,7 @@ class MemoryBank:
         except Exception:
             return []
 
-    def update_experience_score_by_action(self, ticker: str, action_taken: str, pnl_result: float):
+    def update_experience_score_by_action(self, ticker: str, action_taken: str, reward_signal: float):
         """高级特性4：强化学习雏形，根据最新策略收益修改同类历史经验的权威性"""
         if not self.vector_store: return
         
@@ -155,12 +166,13 @@ class MemoryBank:
             for i, metadata in enumerate(all_docs['metadatas']):
                 if metadata.get('ticker') == ticker and metadata.get('action_taken') == action_taken:
                     doc_id = all_docs['ids'][i]
-                    current_score = metadata.get("score", self.CONFIG.get("INIT_SCORE", 1.0))
+                    current_score = metadata.get("score", self.CONFIG.get("INIT_FITNESS", 1.0))
+                    score_delta = min(0.3, abs(float(reward_signal)) / 5.0)
                     
-                    if pnl_result > 0:
-                        metadata["score"] = current_score + self.CONFIG.get("REWARD_SCORE", 0.1) # 奖赏
-                    elif pnl_result < 0:
-                        metadata["score"] = current_score - self.CONFIG.get("PENALTY_SCORE", 0.2) # 严厉惩罚
+                    if reward_signal > 0:
+                        metadata["score"] = current_score + score_delta # 奖赏
+                    elif reward_signal < 0:
+                        metadata["score"] = current_score - score_delta # 严厉惩罚
                         
                     content = all_docs['documents'][i]
                     new_doc = Document(page_content=content, metadata=metadata)
@@ -199,7 +211,6 @@ class MemoryBank:
         print(f"💎 正在结合 {len(high_score_docs)} 条高价值经验与 {len(low_score_docs)} 条亏损教训进行证伪提炼...")
         # 提取过之后，马上将这些高分经验打上结晶标签（crystallized=True），避免系统在未来的每次循环中做无脑复读生成
         try:
-            from langchain.schema import Document
             for i, doc_id in enumerate(doc_ids_to_mark):
                 # 重新写入带crystallized标签的文档
                 idx = all_docs['ids'].index(doc_id)
